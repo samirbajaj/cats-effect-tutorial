@@ -84,6 +84,9 @@ object ConcurrentQueue {
   protected def assertNonNegative[F[_]](n: Int)(implicit F: Sync[F]): F[Unit] =
     if(n < 0) F.raiseError(new IllegalArgumentException(s"Argument must be >= 0 but it is $n")) else F.unit
 
+  protected def assertPositive[F[_]](n: Int)(implicit F: Sync[F]): F[Unit] =
+    if(n <= 0) F.raiseError(new IllegalArgumentException(s"Argument must be > 0 but it is $n")) else F.unit
+
   /**
    * Implementation of methods that are common for both bounded and unbounded
    * concurrent queues.
@@ -114,10 +117,11 @@ object ConcurrentQueue {
   }
 
   /**
-   * Create a bounded queue.
+   * Create a bounded queue. Error raised if size <= 0.
    */
   def bounded[F[_]: Concurrent: Sync, A](size: Int): F[BoundedConcurrentQueue[F, A]] =
     for {
+      _      <- assertPositive(size)
       lock   <- Semaphore[F](1)
       filled <- Semaphore[F](0)
       empty  <- Semaphore[F](size)
@@ -128,7 +132,7 @@ object ConcurrentQueue {
 
       override def pollN(n: Int): F[List[A]] =
         if(n == 0) F.pure(List.empty[A])
-        else
+        else F.uncancelable(
           for {
             _ <- assertNonNegative(n)
             _ <- filled.acquireN(n)
@@ -141,10 +145,11 @@ object ConcurrentQueue {
             }
             _ <- empty.releaseN(n)
           } yield as.toList
+        )
 
       override def peekN(n: Int): F[List[A]] =
         if(n == 0) F.pure(List.empty[A])
-        else
+        else F.uncancelable(
           for {
             _ <- assertNonNegative(n)
             _ <- filled.acquireN(n)
@@ -153,10 +158,11 @@ object ConcurrentQueue {
             }
             _ <- filled.releaseN(n)
           } yield as.toList
+        )
 
       override def putN(as: List[A]): F[Unit] =
         if(as.isEmpty) F.unit
-        else
+        else F.uncancelable(
           for {
             _ <- empty.acquireN(as.size)
             _ <- lock.withPermit {
@@ -164,10 +170,11 @@ object ConcurrentQueue {
             }
             _ <- filled.releaseN(as.size)
           } yield ()
+        )
 
       override def tryPollN(n: Int): F[Option[List[A]]] =
         if(n == 0) F.pure(Option(List.empty[A]))
-        else
+        else F.uncancelable(
           for {
             _ <- assertNonNegative(n)
             acquired <- filled.tryAcquireN(n)
@@ -183,10 +190,11 @@ object ConcurrentQueue {
                 empty.releaseN(n).as(asO)
               }
           } yield asO.map(_.toList)
+        )
 
       override def tryPeekN(n: Int): F[Option[List[A]]] =
         if(n == 0) F.pure(Option(List.empty[A]))
-        else
+        else F.uncancelable(
           for {
             _ <- assertNonNegative(n)
             acquired <- filled.tryAcquireN(n)
@@ -198,10 +206,11 @@ object ConcurrentQueue {
                 filled.releaseN(n).as(asO)
               }
           } yield asO.map(_.toList)
+        )
 
       override def tryPutN(as: List[A]): F[Boolean] =
         if(as.isEmpty) F.pure(true)
-        else
+        else F.uncancelable(
           for {
             acquired <- empty.tryAcquireN(as.size)
             _ <- if(!acquired) F.unit
@@ -210,6 +219,7 @@ object ConcurrentQueue {
                 F.delay(buffer.appendAll(as))
               } >> filled.releaseN(as.size)
           } yield acquired
+        )
 
       override def size: F[Long] =
         filled.available
@@ -236,7 +246,7 @@ object ConcurrentQueue {
 
       override def pollN(n: Int): F[List[A]] =
         if(n == 0) F.pure(List.empty[A])
-        else
+        else F.uncancelable(
           for {
             _ <- assertNonNegative(n)
             _ <- filled.acquireN(n)
@@ -248,10 +258,11 @@ object ConcurrentQueue {
               }
             }
           } yield as.toList
+        )
 
       override def peekN(n: Int): F[List[A]] =
         if(n == 0) F.pure(List.empty[A])
-        else
+        else F.uncancelable(
           for {
             _ <- assertNonNegative(n)
             _ <- filled.acquireN(n)
@@ -259,20 +270,22 @@ object ConcurrentQueue {
               F.delay(buffer.take(n))
             }
           } yield as.toList
+        )
 
       override def putN(as: List[A]): F[Unit] =
         if(as.isEmpty) F.unit
-        else
+        else F.uncancelable(
           for {
             _ <- lock.withPermit {
               F.delay(buffer.appendAll(as))
             }
             _ <- filled.releaseN(as.size)
           } yield ()
+        )
 
       override def tryPollN(n: Int): F[Option[List[A]]] =
         if(n == 0) F.pure(Option(List.empty[A]))
-        else
+        else F.uncancelable(
           for {
             _ <- assertNonNegative(n)
             acquired <- filled.tryAcquireN(n)
@@ -287,10 +300,11 @@ object ConcurrentQueue {
                   }.map(Option(_))
                 }
           } yield aO.map(_.toList)
+        )
 
       override def tryPeekN(n: Int): F[Option[List[A]]] =
         if(n == 0) F.pure(Option(List.empty[A]))
-        else
+        else F.uncancelable(
           for {
             _ <- assertNonNegative(n)
             acquired <- filled.tryAcquireN(n)
@@ -303,6 +317,7 @@ object ConcurrentQueue {
                   filled.releaseN(n).as(asO)
                 }
           } yield asO.map(_.toList)
+        )
 
       override def tryPutN(as: List[A]): F[Boolean] =
         putN(as).as(true)

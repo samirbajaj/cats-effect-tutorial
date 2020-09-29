@@ -41,20 +41,28 @@ object SimpleConcurrentQueue {
   private def buildUnbounded[F[_], A](buffer: mutable.ListBuffer[A], lock: Semaphore[F], filled: Semaphore[F])(implicit F: Sync[F]): SimpleConcurrentQueue[F, A] =
     new SimpleConcurrentQueue[F, A] {
       override def poll: F[A] =
-        for {
-          _ <- filled.acquire
-          a <- lock.withPermit(Sync[F].delay(buffer.remove(0)))
-        } yield a
+        F.uncancelable(
+          for {
+            _ <- filled.acquire
+            a <- lock.withPermit(Sync[F].delay(buffer.remove(0)))
+          } yield a
+        )
 
       override def put(a: A): F[Unit] =
-        for {
-          _ <- lock.withPermit(Sync[F].delay(buffer.append(a)))
-          _ <- filled.release
-        } yield ()
+        F.uncancelable(
+          for {
+            _ <- lock.withPermit(Sync[F].delay(buffer.append(a)))
+            _ <- filled.release
+          } yield ()
+        )
     }
+
+  protected def assertPositive[F[_]](n: Int)(implicit F: Sync[F]): F[Unit] =
+    if(n <= 0) F.raiseError(new IllegalArgumentException(s"Argument must be > 0 but it is $n")) else F.unit
 
   def bounded[F[_]: Concurrent: Sync, A](size: Int): F[SimpleConcurrentQueue[F, A]] =
     for {
+      _ <- assertPositive(size)
       lock <- Semaphore[F](1)
       filled <- Semaphore[F](0)
       empty <- Semaphore[F](size)
@@ -63,18 +71,22 @@ object SimpleConcurrentQueue {
   private def buildBounded[F[_], A](buffer: mutable.ListBuffer[A], lock: Semaphore[F], filled: Semaphore[F], empty: Semaphore[F])(implicit F: Sync[F]): SimpleConcurrentQueue[F, A] =
     new SimpleConcurrentQueue[F, A] {
       override def poll: F[A] =
-        for {
-          _ <- filled.acquire
-          a <- lock.withPermit(Sync[F].delay(buffer.remove(0)))
-          _ <- empty.release
-        } yield a
+        F.uncancelable(
+          for {
+            _ <- filled.acquire
+            a <- lock.withPermit(Sync[F].delay(buffer.remove(0)))
+            _ <- empty.release
+          } yield a
+        )
 
       override def put(a: A): F[Unit] =
-      for {
-        _ <- empty.acquire
-        _ <- lock.withPermit(Sync[F].delay(buffer.append(a)))
-        _ <- filled.release
-      } yield ()
+        F.uncancelable(
+          for {
+            _ <- empty.acquire
+            _ <- lock.withPermit(Sync[F].delay(buffer.append(a)))
+            _ <- filled.release
+          } yield ()
+        )
     }
 }
 
