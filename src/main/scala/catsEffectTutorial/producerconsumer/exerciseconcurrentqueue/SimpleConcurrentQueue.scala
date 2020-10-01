@@ -17,10 +17,11 @@ package catsEffectTutorial.producerconsumer.exerciseconcurrentqueue
 
 import java.util.concurrent.atomic.AtomicInteger
 
-import cats.effect.concurrent.Semaphore
+import cats.effect.concurrent.{Ref, Semaphore}
 import cats.effect.{Concurrent, ExitCode, IO, IOApp, Sync}
 import cats.implicits._
 
+import scala.collection.immutable.Queue
 import scala.collection.mutable
 
 trait SimpleConcurrentQueue[F[_], A] {
@@ -84,6 +85,39 @@ object SimpleConcurrentQueue {
           for {
             _ <- empty.acquire
             _ <- lock.withPermit(Sync[F].delay(buffer.append(a)))
+            _ <- filled.release
+          } yield ()
+        )
+    }
+
+  def bounded2[F[_]: Concurrent: Sync, A](size: Int): F[SimpleConcurrentQueue[F, A]] =
+    for {
+      _ <- assertPositive(size)
+      queueR <- Ref[F].of(Queue.empty[A])
+      filled <- Semaphore[F](0)
+      empty <- Semaphore[F](size)
+    } yield buildBounded2(queueR, filled, empty)
+
+  def buildBounded2[F[_], A](queueR: Ref[F, Queue[A]], filled: Semaphore[F], empty: Semaphore[F])(implicit F: Sync[F]): SimpleConcurrentQueue[F, A] =
+    new SimpleConcurrentQueue[F, A] {
+      override def poll: F[A] =
+        F.uncancelable(
+          for {
+            _ <- filled.acquire
+            a <- queueR.modify{ queue =>
+              queue.dequeue.swap
+            }
+            _ <- empty.release
+          } yield a
+        )
+
+      override def put(a: A): F[Unit] =
+        F.uncancelable(
+          for {
+            _ <- empty.acquire
+            _ <- queueR.modify { queue =>
+              (queue.enqueue(a), ())
+            }
             _ <- filled.release
           } yield ()
         )
